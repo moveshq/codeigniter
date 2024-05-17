@@ -16,6 +16,7 @@ namespace CodeIgniter\Database\Postgre;
 use CodeIgniter\Database\BaseConnection;
 use CodeIgniter\Database\Exceptions\DatabaseException;
 use CodeIgniter\Database\RawSql;
+use CodeIgniter\Database\SavepointsForNestedTransactions;
 use ErrorException;
 use PgSql\Connection as PgSqlConnection;
 use PgSql\Result as PgSqlResult;
@@ -29,6 +30,10 @@ use Stringable;
  */
 class Connection extends BaseConnection
 {
+    use SavepointsForNestedTransactions {
+        _savepointQueryDefault as _savepointQuery;
+    }
+
     /**
      * Database driver
      *

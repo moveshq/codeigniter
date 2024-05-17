@@ -15,6 +15,7 @@ namespace CodeIgniter\Database\SQLSRV;
 
 use CodeIgniter\Database\BaseConnection;
 use CodeIgniter\Database\Exceptions\DatabaseException;
+use CodeIgniter\Database\SavepointsForNestedTransactions;
 use stdClass;
 
 /**
@@ -24,6 +25,8 @@ use stdClass;
  */
 class Connection extends BaseConnection
 {
+    use SavepointsForNestedTransactions;
+
     /**
      * Database driver
      *
@@ -563,5 +566,10 @@ class Connection extends BaseConnection
         }
 
         return parent::isWriteType($sql);
+    }
+
+    protected function _savepointQuery($create, $commit): string
+    {
+        return $create ? 'SAVE' : ($commit ? 'COMMIT' : 'ROLLBACK') . ' TRANSACTION';
     }
 }

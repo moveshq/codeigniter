@@ -33,6 +33,7 @@ use Throwable;
  * @property-read string     $DBDriver
  * @property-read string     $DBPrefix
  * @property-read string     $DSN
+ * @property-read bool       $enableSavepoints
  * @property-read array|bool $encrypt
  * @property-read array      $failover
  * @property-read string     $hostname
@@ -363,6 +364,13 @@ abstract class BaseConnection implements ConnectionInterface
         'datetime-us' => 'Y-m-d H:i:s.u',
         'time'        => 'H:i:s',
     ];
+
+    /**
+     * Whether to use savepoints to fully support nesting transactions and partial rollbacks.
+     *
+     * @var bool
+     */
+    protected $enableSavepoints = false;
 
     /**
      * Saves our connection settings.
@@ -778,6 +786,18 @@ abstract class BaseConnection implements ConnectionInterface
     }
 
     /**
+     * If set to true, enables the use of nested transactions
+     * If set to false (default), only the outermost transaction
+     * actually gets started and ended or rolled back.
+     */
+    public function transSavepoints(bool $enable): self
+    {
+        $this->enableSavepoints = $enable;
+
+        return $this;
+    }
+
+    /**
      * Complete Transaction
      */
     public function transComplete(): bool
@@ -789,13 +809,6 @@ abstract class BaseConnection implements ConnectionInterface
         // The query() function will set this flag to FALSE in the event that a query failed
         if ($this->transStatus === false || $this->transFailure === true) {
             $this->transRollback();
-
-            // If we are NOT running in strict mode, we will reset
-            // the _trans_status flag so that subsequent groups of
-            // transactions will be permitted.
-            if ($this->transStrict === false) {
-                $this->transStatus = true;
-            }
 
             return false;
         }
@@ -820,8 +833,9 @@ abstract class BaseConnection implements ConnectionInterface
             return false;
         }
 
-        // When transactions are nested we only begin/commit/rollback the outermost ones
-        if ($this->transDepth > 0) {
+        // When transactions are nested and nested transactions are not enabled
+        // we only begin/commit/rollback the outermost ones
+        if (! $this->enableSavepoints && $this->transDepth > 0) {
             $this->transDepth++;
 
             return true;
@@ -836,13 +850,15 @@ abstract class BaseConnection implements ConnectionInterface
         // even if the queries produce a successful result.
         $this->transFailure = ($testMode === true);
 
-        if ($this->_transBegin()) {
-            $this->transDepth++;
+        $started = false;
 
-            return true;
+        try {
+            return $started = ($this->transDepth < 1 ? $this->_transBegin() : $this->_transBeginNested());
+        } finally {
+            if ($started) {
+                $this->transDepth++;
+            }
         }
-
-        return false;
     }
 
     /**
@@ -850,18 +866,7 @@ abstract class BaseConnection implements ConnectionInterface
      */
     public function transCommit(): bool
     {
-        if (! $this->transEnabled || $this->transDepth === 0) {
-            return false;
-        }
-
-        // When transactions are nested we only begin/commit/rollback the outermost ones
-        if ($this->transDepth > 1 || $this->_transCommit()) {
-            $this->transDepth--;
-
-            return true;
-        }
-
-        return false;
+        return $this->_transEnd(true);
     }
 
     /**
@@ -869,18 +874,36 @@ abstract class BaseConnection implements ConnectionInterface
      */
     public function transRollback(): bool
     {
-        if (! $this->transEnabled || $this->transDepth === 0) {
-            return false;
+        return $this->_transEnd(false);
+    }
+
+    private function _transEnd(bool $commit = false): bool
+    {
+        $ended                = false;
+        $transEndMethod       = $commit ? '_transCommit' : '_transRollback';
+        $transEndNestedMethod = $transEndMethod . 'Nested';
+
+        try {
+            // if nested transactions are disabled and transactions are nested we only begin/commit/rollback the outermost ones
+            return $ended = match (true) {
+                ! $this->transEnabled                            => false,
+                $this->transDepth === 1                          => $this->{$transEndMethod}(),
+                $this->enableSavepoints && $this->transDepth > 1 => $this->{$transEndNestedMethod}(),
+                $this->transDepth > 1                            => true,
+                default                                          => false,
+            };
+        } finally {
+            if ($ended) {
+                $this->transDepth = max(0, $this->transDepth - 1);
+
+                // If we are NOT running in strict mode, we will reset
+                // the _trans_status flag so that subsequent groups of
+                // transactions will be permitted.
+                if ($this->transStrict === false) {
+                    $this->transStatus = true;
+                }
+            }
         }
-
-        // When transactions are nested we only begin/commit/rollback the outermost ones
-        if ($this->transDepth > 1 || $this->_transRollback()) {
-            $this->transDepth--;
-
-            return true;
-        }
-
-        return false;
     }
 
     /**
@@ -897,6 +920,21 @@ abstract class BaseConnection implements ConnectionInterface
      * Rollback Transaction
      */
     abstract protected function _transRollback(): bool;
+
+    /**
+     * Begin Transaction
+     */
+    abstract protected function _transBeginNested(): bool;
+
+    /**
+     * Commit Transaction
+     */
+    abstract protected function _transCommitNested(): bool;
+
+    /**
+     * Rollback Transaction
+     */
+    abstract protected function _transRollbackNested(): bool;
 
     /**
      * Returns a non-shared new instance of the query builder for this connection.
@@ -1720,7 +1758,7 @@ abstract class BaseConnection implements ConnectionInterface
      */
     public function isWriteType($sql): bool
     {
-        return (bool) preg_match('/^\s*(WITH\s.+(\s|[)]))?"?(SET|INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|TRUNCATE|LOAD|COPY|ALTER|RENAME|GRANT|REVOKE|LOCK|UNLOCK|REINDEX|MERGE)\s(?!.*\sRETURNING\s)/is', $sql);
+        return (bool) preg_match('/^\s*(WITH\s.+(\s|[)]))?"?(SET|INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|TRUNCATE|LOAD|COPY|ALTER|RENAME|GRANT|REVOKE|LOCK|UNLOCK|REINDEX|MERGE|((RELEASE|ROLLBACK TO)?\s*SAVEPOINT))\s(?!.*\sRETURNING\s)/is', $sql);
     }
 
     /**
