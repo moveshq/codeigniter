@@ -437,6 +437,47 @@ class Rules
     }
 
     /**
+     * The field is required when any of the other required fields have expected value are present
+     * in the data.
+     *
+     * Example (identity_number field is required when the citizenship,1,2 value is present):
+     *
+     *     required_with_value[citizenship,1,2]
+     *
+     * @param string|null          $str
+     * @param string|null          $fieldWithValue that we should check if present
+     * @param array<string, mixed> $data           Complete list of field from the form
+     */
+    public function required_with_value($str = null, ?string $fieldWithValue = null, array $data = []): bool
+    {
+        if ($fieldWithValue === null || $data === []) {
+            throw new InvalidArgumentException('You must supply the parameters: field,expected_values, data.');
+        }
+
+        // Separate fields and expected values
+        $parts          = explode(',', $fieldWithValue);
+        $field          = array_shift($parts); // Get field
+        $expectedValues = $parts; // The remainder is the expected value
+
+        if (empty($field) || empty($expectedValues)) {
+            throw new InvalidArgumentException("You must supply the expected values of field: E.g. {$fieldWithValue},value1,value2,...");
+        }
+
+        // If the field does not exist in the data, immediately return true
+        if (! array_key_exists($field, $data)) {
+            return true;
+        }
+
+        // If the value of a field matches one of the expected values, then this field is required
+        if (in_array($data[$field], $expectedValues, true)) {
+            // The field to be checked must exist and cannot be empty
+            return ! empty($str);
+        }
+
+        return true;
+    }
+
+    /**
      * The field exists in $data.
      *
      * @param array|bool|float|int|object|string|null $value The field value.
